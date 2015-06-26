@@ -1,0 +1,4 @@
+name: 'Node Noindex'
+description: 'Gives the option to exclude specific nodes from search engines'
+core: 8.x
+type: module

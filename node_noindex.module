@@ -1,73 +1,53 @@
 <?php
-/**
- * Implements hook_views_api().
- */
-function node_noindex_views_api() {
-  return array(
-    'api' => '2.0',
-    'path' => drupal_get_path('module', 'node_noindex'),
-  );
-}
+
+use Drupal\node\NodeTypeInterface;
+use Drupal\node\NodeInterface;
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\node\Entity\NodeType;
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Entity\Display\EntityViewDisplayInterface;
 
 /**
- * Implements hook_permission().
+ * Implements hook_entity_load().
  */
-function node_noindex_permission() {
-  return array(
-    'administer node_noindex' => array(
-      'title' => t('administer node_noindex'),
-      'description' => t('Administer node noindex'),
-    ),
-  );
-}
+function node_noindex_entity_load(array $entities, $entity_type_id) {
+  if ($entity_type_id == 'node') {
+    $query = db_select('node_noindex', 'n')
+      ->condition('n.nid', array_keys($entities), 'IN')
+      ->fields('n', array('nid', 'noindex'));
 
-
-
-/**
- * Implements hook_node_load().
- */
-function node_noindex_node_load($nodes, $types) {
-  $result = db_query('SELECT nid, noindex FROM {node_noindex} WHERE nid IN(:nids)', array(':nids' => array_keys($nodes)));
-  foreach ($result as $record) {
-    $nodes[$record->nid]->noindex = $record->noindex;
+    $result = $query->execute();
+    foreach ($result as $record) {
+      $entities[$record->nid]->noindex = $record->noindex;
+    }
   }
 }
 
 /**
- * Implements hook_node_view().
+ * Implements hook_entity_view().
  */
-function node_noindex_node_view($node, $view_mode = 'full') {
+function node_noindex_entity_view(array &$build, EntityInterface $entity, EntityViewDisplayInterface $display, $view_mode, $langcode) {
   // We make sure we are on the node page.
-  if (_node_noindex_node_has_noindex($node) && $view_mode == 'full' && ($node_mgo = menu_get_object()) && $node->nid == $node_mgo->nid) {
-    $element = array(
-      '#tag' => 'meta',
-      '#attributes' => array(
-        'name' => 'robots',
-        'content' => 'noindex',
-      ),
-    );
-    drupal_add_html_head($element, 'node_noindex');
+  if ($entity instanceof NodeInterface && $view_mode == 'full') {
+    if (_node_noindex_node_has_noindex($entity) && $view_mode == 'full') {
+
+      $header = array(
+        '#type' => 'html_tag',
+        '#tag' => 'meta',
+        '#attributes' => array(
+          'name' => 'robots',
+          'content' => 'noindex',
+        ),
+      );
+      $build['#attached']['html_head'][] = [$header, 'noindex'];
+    }
   }
-}
-
-/**
- * Implements hook_node_insert().
- */
-function node_noindex_node_insert($node) {
-  _node_noindex_node_set_noindex($node);
-}
-
-/**
- * Implements hook_node_update().
- */
-function node_noindex_node_update($node) {
-  _node_noindex_node_set_noindex($node);
 }
 
 /**
  * Implements hook_node_delete().
  */
-function node_noindex_node_delete($node) {
+function node_noindex_node_delete(NodeInterface $node) {
   _node_noindex_node_delete_noindex($node);
 }
 
@@ -75,51 +55,97 @@ function node_noindex_node_delete($node) {
 /**
  * Implements hook_form_alter().
  */
-function node_noindex_form_alter(&$form, $form_state, $form_id) {
-  if (!empty($form['#node_edit_form'])) {
-    if (user_access('administer node_noindex') && variable_get('node_noindex_' . $form['type']['#value'], 0)) {
-      $node = $form['#node'];
+function node_noindex_form_node_form_alter(&$form, FormStateInterface $form_state, $form_id) {
+  if (\Drupal::currentUser()->hasPermission('administer node_noindex')) {
+    $node = $form_state->getFormObject()->getEntity();
+
+    $type_obj = NodeType::load($node->getType());
+
+    $node_index = $type_obj->getThirdPartySetting('node_noindex', 'node_noindex', FALSE);
+
+    if (isset($node->noindex)) {
+      $noindex = $node->noindex;
+    }
+    else {
+      $noindex = $type_obj->getThirdPartySetting('node_noindex', 'node_noindex_default', FALSE);
+    }
+
+
+    if ($node_index) {
       $form['node_noindex'] = array(
-        '#type' => 'fieldset',
+        '#type' => 'details',
         '#title' => t('Search engine settings'),
-        '#collapsible' => TRUE,
-        '#collapsed' => TRUE,
-        '#access' => user_access('administer node_noindex'),
-        '#weight' => 20,
-        '#group' => 'additional_settings',
+        '#access' => \Drupal::currentUser()
+          ->hasPermission('administer node_noindex'),
+        '#weight' => 100,
+        '#group' => 'advanced',
       );
       $form['node_noindex']['noindex'] = array(
         '#type' => 'checkbox',
-        '#title' => t('Exclude from searchengines'),
+        '#title' => t('Exclude from search engines'),
         '#description' => t('If enabled a "noindex"-header will be set on this node. This should mean that this node will not be indexed and not occur in search engine results'),
-        '#default_value' => isset($node->noindex) ? $node->noindex : variable_get('node_noindex_default_' . $form['type']['#value'], 0),
+        '#default_value' => $noindex,
         '#weight' => 5,
       );
+
+      foreach (array_keys($form['actions']) as $action) {
+        if ($action != 'preview' && isset($form['actions'][$action]['#type']) && $form['actions'][$action]['#type'] === 'submit') {
+          $form['actions'][$action]['#submit'][] = 'node_noindex_form_node_form_submit';
+        }
+      }
     }
   }
 }
 
 /**
+ * Form submission handler for node noindex item field on the node form.
+ *
+ * @see node_noindex_form_node_form_alter()
+ */
+function node_noindex_form_node_form_submit($form, FormStateInterface $form_state) {
+  $node = $form_state->getFormObject()->getEntity();
+  $noindex = $form_state->getValue('noindex');
+
+  $type = $node->type->entity;
+  $noindex_default = $type->getThirdPartySetting('node_noindex', 'node_noindex_default', FALSE);
+
+  if ($noindex) {
+    $node->noindex = TRUE;
+    _node_noindex_node_set_noindex($node);
+  }
+  elseif ($noindex_default) {
+    $node->noindex = TRUE;
+    _node_noindex_node_set_noindex($node);
+  }
+  else {
+    _node_noindex_node_delete_noindex($node);
+  }
+
+}
+
+/**
  * Implements hook_form_FORM_ID_alter().
  */
-function node_noindex_form_node_type_form_alter(&$form, $form_state) {
+function node_noindex_form_node_type_form_alter(&$form, FormStateInterface $form_state, $form_id) {
+  $type = $form_state->getFormObject()->getEntity();
+
   $form['node_noindex'] = array(
-    '#type' => 'fieldset',
+    '#type' => 'details',
     '#title' => t('Search engine settings'),
-    '#collapsible' => TRUE,
-    '#collapsed' => TRUE,
     '#group' => 'additional_settings',
   );
+
   $form['node_noindex']['node_noindex'] = array(
     '#type' => 'checkbox',
     '#title' => t('Enable noindex option.'),
-    '#default_value' => variable_get('node_noindex_' . $form['#node_type']->type, 0),
+    '#default_value' => $type->getThirdPartySetting('node_noindex', 'node_noindex', FALSE),
     '#description' => t('Should this node type display the noindex setting in the node edit form?'),
   );
+
   $form['node_noindex']['node_noindex_default'] = array(
     '#type' => 'checkbox',
     '#title' => t('Set noindex as default'),
-    '#default_value' => variable_get('node_noindex_default_' . $form['#node_type']->type, 0),
+    '#default_value' => $type->getThirdPartySetting('node_noindex', 'node_noindex_default', FALSE),
     '#description' => t('Should this node type display have noindex as default?'),
     '#states' => array(
       'visible' => array(
@@ -127,21 +153,32 @@ function node_noindex_form_node_type_form_alter(&$form, $form_state) {
       ),
     ),
   );
+  $form['#entity_builders'][] = 'node_noindex_form_node_type_form_builder';
 }
 
+/**
+ * Entity builder for the node type form with node_noindex options.
+ *
+ * @see node_noindex_form_node_type_form_alter().
+ */
+function node_noindex_form_node_type_form_builder($entity_type, NodeTypeInterface $type, &$form, FormStateInterface $form_state) {
+  $type->setThirdPartySetting('node_noindex', 'node_noindex', $form_state->getValue('node_noindex'));
+  $type->setThirdPartySetting('node_noindex', 'node_noindex_default', $form_state->getValue('node_noindex_default'));
+}
 
 /**
  * @return
  *  true if the node has the noindex setting.
  */
-function _node_noindex_node_has_noindex($node) {
-  if (!isset($node->nid)) {
+function _node_noindex_node_has_noindex(NodeInterface $node) {
+  $nid = $node->id();
+  if (!isset($nid)) {
     return FALSE;
   }
   if (isset($node->noindex)) {
     return $node->noindex;
   }
-  return db_query("SELECT noindex FROM {node_noindex} WHERE nid = :nid", array(':nid' => $node->nid))->fetchField();
+  return db_query("SELECT noindex FROM {node_noindex} WHERE nid = :nid", array(':nid' => $node->id()))->fetchField();
 }
 
 /**
@@ -150,10 +187,10 @@ function _node_noindex_node_has_noindex($node) {
  * @param
  *  object $node
  */
-function _node_noindex_node_set_noindex($node) {
+function _node_noindex_node_set_noindex(NodeInterface $node) {
   _node_noindex_node_delete_noindex($node);
   if (isset($node->noindex) && $node->noindex) {
-    $fields = array('nid' => $node->nid, 'noindex' => $node->noindex);
+    $fields = array('nid' => $node->id(), 'noindex' => $node->noindex);
     db_insert('node_noindex')->fields($fields)->execute();
   }
 }
@@ -164,8 +201,8 @@ function _node_noindex_node_set_noindex($node) {
  * @param
  *  object $node
  */
-function _node_noindex_node_delete_noindex($node) {
+function _node_noindex_node_delete_noindex(NodeInterface $node) {
   db_delete('node_noindex')
-  ->condition('nid', $node->nid)
+  ->condition('nid', $node->id())
   ->execute();
 }

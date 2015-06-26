@@ -1,0 +1,5 @@
+# Schema for the views plugins of the node_noindex module.
+
+views.filter.node_no_index:
+  type: views.filter.node_no_index
+  label: 'Select nodes that are not indexed'

@@ -1,0 +1,10 @@
+node.type.*.third_party.node_noindex:
+  type: mapping
+  label: 'Per-content type node_noindex settings'
+  mapping:
+    node_noindex:
+      type: boolean
+      label: 'node_noindex available for this content type'
+    node_noindex_default:
+      type: boolean
+      label: 'node_noindex default for this content type'
